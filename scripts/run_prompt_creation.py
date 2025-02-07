@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator, skip_first_batches
 from accelerate.logging import get_logger
-from datasets import DatasetDict, load_dataset
+from datasets import DatasetDict, load_dataset, Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
@@ -112,13 +112,23 @@ class DataArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
-
     output_dir: str = field(
         metadata={
             "help": "Where to save the processed dataset to disk. If unspecified, uses a 'pretty' version of the "
             "original dataset name. E.g. 'facebook/voxpopuli' will be saved under 'voxpopuli'."
         },
     )
+
+    save_to_parquet: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Save the processed dataset in Parquet format."},
+    )
+
+    save_only_parquet: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If set, only save final dataset to parquet format (skip save_to_disk & push_to_hub)."},
+    )
+
     dataset_name: str = field(
         default=None,
         metadata={"help": "The name of the dataset to use (via the datasets library)"},
@@ -463,13 +473,19 @@ def main():
     else:
         with accelerator.local_main_process_first():
             # load all splits for annotation
-            raw_datasets = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-                num_proc=data_args.preprocessing_num_workers,
-            )
+            if data_args.dataset_name.endswith(".parquet"):
+                # Đọc dataset từ file Parquet cục bộ
+                raw_datasets = Dataset.from_parquet(data_args.dataset_name)
+                raw_datasets = DatasetDict({"train": raw_datasets})  # Đưa vào dạng DatasetDict nếu cần các split
+            else:
+                # Load từ Hugging Face Hub (nếu không phải Parquet)
+                raw_datasets = load_dataset(
+                    data_args.dataset_name,
+                    data_args.dataset_config_name,
+                    cache_dir=model_args.cache_dir,
+                    token=model_args.token,
+                    num_proc=data_args.preprocessing_num_workers,
+                )
 
     raw_datasets_features = set(raw_datasets[next(iter(raw_datasets))].features.keys())
 
@@ -653,16 +669,38 @@ def main():
         accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
-        vectorized_datasets.save_to_disk(data_args.output_dir)
+        # vectorized_datasets.save_to_disk(data_args.output_dir)
         if data_args.push_to_hub:
             vectorized_datasets.push_to_hub(
                 data_args.hub_dataset_id,
                 config_name=data_args.dataset_config_name if data_args.dataset_config_name is not None else "default",
                 token=model_args.token,
             )
+    
+    if accelerator.is_main_process:
+        if data_args.save_only_parquet:
+            # Nếu bật cờ save_only_parquet=True, thì chỉ lưu ra file Parquet, bỏ qua save_to_disk/push_to_hub
+            parquet_output_dir = os.path.join(data_args.output_dir, "parquet_files")
+            os.makedirs(parquet_output_dir, exist_ok=True)
+
+            # Lấy tên file gốc từ `data_args.dataset_name` nếu có
+            original_filename = os.path.basename(data_args.dataset_name).split('.')[0]  # Bỏ đuôi .parquet nếu có
+            for split, dataset in vectorized_datasets.items():
+                parquet_file = os.path.join(parquet_output_dir, f"{original_filename}_{split}.parquet")
+                dataset.to_pandas().to_parquet(parquet_file, engine="pyarrow")
+                logger.info(f"Saved {split} split to Parquet: {parquet_file}")
+        else:
+            # Ngược lại, giữ nguyên flow cũ (nếu cần) hoặc tùy chỉnh thêm
+            vectorized_datasets.save_to_disk(data_args.output_dir)
+            if data_args.push_to_hub:
+                vectorized_datasets.push_to_hub(
+                    data_args.hub_dataset_id,
+                    config_name=data_args.dataset_config_name if data_args.dataset_config_name is not None else "default",
+                    token=model_args.token,
+                )
+
     accelerator.wait_for_everyone()
     accelerator.end_training()
-
 
 if __name__ == "__main__":
     main()

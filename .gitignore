@@ -4,3 +4,10 @@ env_dataspeech/*
 wip_scripts/*
 plots/*
 .vscode/*
+audio_outputs
+processed_parquet
+processed2_parquet
+temp_dataset
+temp_dataset
+updated_parquet
+data

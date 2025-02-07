@@ -1,0 +1,40 @@
+python3 read_parquet/split_audio_filename.py 
+
+python main.py \
+    --input_dir "data/test" \
+    --configuration "default" \
+    --text_column_name "transcription" \
+    --audio_column_name "audio" \
+    --cpu_num_workers 4 \
+    --rename_column \
+    --apply_squim_quality_estimation \
+    --output_dir "test_dataset" 
+
+python read_parquet/move_column.py
+
+python read_parquet/check_nan.py --input_dir test_dataset --wav_dir audio_outputs --output_dir processed_parquet --columns snr c50
+
+python ./scripts/metadata_to_text.py \
+    --input_dir "processed_parquet" \
+    --output_dir "processed2_parquet" \
+    --configuration "default" \
+    --cpu_num_workers "8" \
+    --path_to_bin_edges "./examples/tags_to_annotations/v02_bin_edges.json" \
+    --path_to_text_bins "./examples/tags_to_annotations/v02_text_bins.json" \
+    --avoid_pitch_computation \
+    --apply_squim_quality_estimation 
+
+
+python ./scripts/run_prompt_creation.py \
+  --speaker_name "Lan" \
+  --is_single_speaker \
+  --is_new_speaker_prompt \
+  --dataset_name "processed2_parquet/train_edited.parquet" \
+  --model_name_or_path "mistralai/Mistral-7B-Instruct-v0.2" \
+  --per_device_eval_batch_size 32 \
+  --attn_implementation "sdpa" \
+  --output_dir "./tmp_jenny" \
+  --load_in_4bit \
+  --preprocessing_num_workers 32 \
+  --dataloader_num_workers 32 \
+  --save_to_parquet
